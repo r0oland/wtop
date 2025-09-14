@@ -2,6 +2,8 @@
 
 A super minimal, transparent performance overlay for Windows 10/11 that displays real-time system metrics with sparkline graphs.
 
+<img width="713" height="44" alt="image" src="https://github.com/user-attachments/assets/920162ee-1a89-4899-808f-3dff82c4e4e6" />
+
 ## Features
 
 - **Real-time Performance Graphs**: CPU, Memory, and Network utilization sparklines
@@ -85,3 +87,4 @@ cmake --build build --config Release
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
+
