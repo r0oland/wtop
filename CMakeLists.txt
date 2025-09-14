@@ -52,6 +52,7 @@ target_compile_options(wtop PRIVATE ${WTOP_WARNINGS})
 # clang-format integration (optional)
 find_program(CLANG_FORMAT_EXE NAMES clang-format clang-format.exe)
 if(CLANG_FORMAT_EXE)
+  message(STATUS "Found clang-format: ${CLANG_FORMAT_EXE}")
   add_custom_target(format
     COMMAND ${CLANG_FORMAT_EXE} -i ${WTOP_SOURCES} ${WTOP_HEADERS}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -60,6 +61,14 @@ if(CLANG_FORMAT_EXE)
     COMMAND ${CLANG_FORMAT_EXE} --Werror --dry-run ${WTOP_SOURCES} ${WTOP_HEADERS}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Checking clang-format compliance")
+else()
+  message(STATUS "clang-format not found: 'format' target will emit guidance")
+  add_custom_target(format
+    COMMAND ${CMAKE_COMMAND} -E echo "clang-format not found. Install LLVM (winget install -e --id LLVM.LLVM) or add clang-format to PATH."
+    COMMENT "clang-format unavailable")
+  add_custom_target(format-check
+    COMMAND ${CMAKE_COMMAND} -E echo "clang-format not found. Cannot check formatting." 
+    COMMENT "clang-format unavailable")
 endif()
 
 # Enable LTO if requested
