@@ -92,8 +92,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_PAINT: {
         PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
         RECT rc; GetClientRect(hwnd, &rc);
+        
+        // Clear the entire background first
+        HBRUSH blackBrush = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(hdc, &rc, blackBrush);
+        DeleteObject(blackBrush);
+        
         SetBkColor(hdc, RGB(0,0,0));
-        SetTextColor(hdc, RGB(0,255,0));
         HFONT hFont = (HFONT)GetStockObject(ANSI_FIXED_FONT);
         HGDIOBJ oldFont = SelectObject(hdc, hFont);
         std::string line = BuildOverlayLine(g_lastSnap);
@@ -103,21 +108,71 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_frozenWindowWidth = sz.cx + PADDING_X * 2 + (GRAPH_WIDTH*3) + (GRAPH_SPACING*2) + 8;
             RecomputeAndResize();
         }
-        TextOutA(hdc, PADDING_X + (GRAPH_WIDTH*3) + GRAPH_SPACING*2 + 8, PADDING_Y, line.c_str(), (int)line.size());
         
-        // Draw graphs with visible colors
-        auto drawGraph = [&](const std::vector<float>& h, int offsetX, COLORREF color) {
-            HPEN pen = CreatePen(PS_SOLID, 1, color);
-            HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+        // Draw text with shadow effect for better readability
+        int textX = PADDING_X + (GRAPH_WIDTH*3) + GRAPH_SPACING*2 + 8;
+        int textY = PADDING_Y;
+        
+        // Draw shadow (slightly offset, dark gray)
+        SetTextColor(hdc, RGB(64, 64, 64));
+        SetBkMode(hdc, TRANSPARENT);
+        TextOutA(hdc, textX + 1, textY + 1, line.c_str(), (int)line.size());
+        
+        // Draw main text (white)
+        SetTextColor(hdc, RGB(255, 255, 255));
+        TextOutA(hdc, textX, textY, line.c_str(), (int)line.size());
+        
+        // Draw graphs with labels and scale
+        auto drawGraphWithLabel = [&](const std::vector<float>& h, int offsetX, COLORREF color, const char* label) {
+            // Draw label below graph
+            SetTextColor(hdc, RGB(180, 180, 180));
+            SetBkMode(hdc, TRANSPARENT);
+            int labelY = PADDING_Y + GRAPH_HEIGHT + 2;
+            TextOutA(hdc, offsetX, labelY, label, (int)strlen(label));
+            
+            // Draw scale markers (0%, 50%, 100%)
+            HPEN scalePen = CreatePen(PS_SOLID, 1, RGB(64, 64, 64));
+            HPEN oldScalePen = (HPEN)SelectObject(hdc, scalePen);
             
             int baseY = PADDING_Y + GRAPH_HEIGHT;
+            // 100% line (top)
+            MoveToEx(hdc, offsetX, PADDING_Y, nullptr);
+            LineTo(hdc, offsetX + GRAPH_WIDTH, PADDING_Y);
+            // 50% line (middle)
+            int midY = PADDING_Y + GRAPH_HEIGHT / 2;
+            MoveToEx(hdc, offsetX, midY, nullptr);
+            LineTo(hdc, offsetX + GRAPH_WIDTH, midY);
+            // 0% line (bottom) 
+            MoveToEx(hdc, offsetX, baseY, nullptr);
+            LineTo(hdc, offsetX + GRAPH_WIDTH, baseY);
+            
+            SelectObject(hdc, oldScalePen);
+            DeleteObject(scalePen);
+            
+            // Draw the actual graph data
+            HPEN pen = CreatePen(PS_SOLID, 2, color); // Thicker line for visibility
+            HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+            
             int count = (int)h.size();
-            MoveToEx(hdc, offsetX, baseY - (int)std::round(h[(historyIndex)%count]* (GRAPH_HEIGHT-1)), nullptr);
-            for (int i=1;i<count;i++) {
-                int idx = (historyIndex + i) % count;
-                int x = offsetX + i;
-                int y = baseY - (int)std::round(h[idx]*(GRAPH_HEIGHT-1));
-                LineTo(hdc, x, y);
+            
+            // Draw oldest on the left, newest on the right.
+            // historyIndex always points to the slot to be written next (i.e., newest just written is at (historyIndex-1+count)%count)
+            int filled = historyFilled ? count : (int)historyIndex; // number of valid samples
+            if (filled > 0) {
+                bool hasPreviousPoint = false;
+                for (int i = 0; i < filled; ++i) {
+                    // Map i (0..filled-1) to circular buffer index: oldest = (historyIndex - filled + i + count) % count
+                    int histIdx = (historyIndex - filled + i + count) % count;
+                    float value = std::clamp(h[histIdx], 0.f, 1.f);
+                    int x = offsetX + i; // left to right progression
+                    int y = baseY - (int)std::round(value * (GRAPH_HEIGHT - 1));
+                    if (!hasPreviousPoint) {
+                        MoveToEx(hdc, x, y, nullptr);
+                        hasPreviousPoint = true;
+                    } else {
+                        LineTo(hdc, x, y);
+                    }
+                }
             }
             
             SelectObject(hdc, oldPen);
@@ -125,9 +180,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         };
         
         if (!histories.cpu.empty()) {
-            drawGraph(histories.cpu, PADDING_X, RGB(0, 255, 100));        // Green for CPU
-            drawGraph(histories.mem, PADDING_X + GRAPH_WIDTH + GRAPH_SPACING, RGB(100, 150, 255)); // Blue for Memory  
-            drawGraph(histories.net, PADDING_X + (GRAPH_WIDTH + GRAPH_SPACING)*2, RGB(255, 200, 0)); // Yellow for Network
+            drawGraphWithLabel(histories.cpu, PADDING_X, RGB(0, 255, 100), "CPU");        // Green for CPU
+            drawGraphWithLabel(histories.mem, PADDING_X + GRAPH_WIDTH + GRAPH_SPACING, RGB(100, 150, 255), "MEM"); // Blue for Memory  
+            drawGraphWithLabel(histories.net, PADDING_X + (GRAPH_WIDTH + GRAPH_SPACING)*2, RGB(255, 200, 0), "NET"); // Yellow for Network
         }
         SelectObject(hdc, oldFont);
         EndPaint(hwnd, &ps);
@@ -208,7 +263,7 @@ void RecomputeAndResize() {
     int graphsWidth = (GRAPH_WIDTH * 3) + (GRAPH_SPACING * 2);
     int textExtra = 300; // initial guess until frozen
     int width = g_frozenWidth ? g_frozenWindowWidth : PADDING_X*2 + graphsWidth + 8 + textExtra;
-    int height = PADDING_Y*2 + GRAPH_HEIGHT;
+    int height = PADDING_Y*2 + GRAPH_HEIGHT + 14; // +14 for label text below graphs
     SetWindowPos(g_hwnd, nullptr, 0,0, width, height, SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
     PositionNearTaskbarClock();
 }
