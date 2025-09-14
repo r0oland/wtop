@@ -35,6 +35,7 @@ endif()
 
 # Collect sources
 file(GLOB_RECURSE WTOP_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+file(GLOB_RECURSE WTOP_HEADERS CONFIGURE_DEPENDS include/*.hpp)
 add_executable(wtop WIN32 ${WTOP_SOURCES})
 
 target_include_directories(wtop PRIVATE include)
@@ -47,6 +48,19 @@ endif()
 
 # Apply warnings
 target_compile_options(wtop PRIVATE ${WTOP_WARNINGS})
+
+# clang-format integration (optional)
+find_program(CLANG_FORMAT_EXE NAMES clang-format clang-format.exe)
+if(CLANG_FORMAT_EXE)
+  add_custom_target(format
+    COMMAND ${CLANG_FORMAT_EXE} -i ${WTOP_SOURCES} ${WTOP_HEADERS}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Running clang-format on sources")
+  add_custom_target(format-check
+    COMMAND ${CLANG_FORMAT_EXE} --Werror --dry-run ${WTOP_SOURCES} ${WTOP_HEADERS}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Checking clang-format compliance")
+endif()
 
 # Enable LTO if requested
 if(WTOP_ENABLE_LTO)
