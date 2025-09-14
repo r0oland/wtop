@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <iphlpapi.h>
+#include <shlobj.h>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -50,6 +51,44 @@ static MetricsSnapshot g_lastSnap{};
 // Network interface selection
 static std::vector<std::pair<std::wstring, DWORD>> g_availableInterfaces;
 static int g_selectedInterfaceIndex = -1; // -1 = auto-select fastest
+
+// Graph visibility flags (persisted)
+static bool g_showCpuGraph = true;
+static bool g_showMemGraph = true;
+static bool g_showNetGraph = true;
+
+// Settings persistence
+static std::wstring GetSettingsPath() {
+    wchar_t appData[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appData))) {
+        std::wstring dir = std::wstring(appData) + L"\\wtop";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        return dir + L"\\settings.ini";
+    }
+    return L"settings.ini"; // fallback
+}
+
+static void LoadSettings() {
+    auto path = GetSettingsPath();
+    wchar_t buf[64];
+    if (GetPrivateProfileStringW(L"general", L"interface_index", L"-1", buf, 64, path.c_str())) {
+        g_selectedInterfaceIndex = _wtoi(buf);
+        g_metrics.setSelectedNetworkInterface(g_selectedInterfaceIndex < 0 ? -1 : g_selectedInterfaceIndex >= (int)g_availableInterfaces.size() ? -1 : (int)g_availableInterfaces[g_selectedInterfaceIndex].second);
+    }
+    if (GetPrivateProfileStringW(L"graphs", L"show_cpu", L"1", buf, 64, path.c_str())) g_showCpuGraph = (_wtoi(buf)!=0);
+    if (GetPrivateProfileStringW(L"graphs", L"show_mem", L"1", buf, 64, path.c_str())) g_showMemGraph = (_wtoi(buf)!=0);
+    if (GetPrivateProfileStringW(L"graphs", L"show_net", L"1", buf, 64, path.c_str())) g_showNetGraph = (_wtoi(buf)!=0);
+}
+
+static void SaveSettings() {
+    auto path = GetSettingsPath();
+    wchar_t num[32];
+    _itow_s(g_selectedInterfaceIndex, num, 10);
+    WritePrivateProfileStringW(L"general", L"interface_index", num, path.c_str());
+    WritePrivateProfileStringW(L"graphs", L"show_cpu", g_showCpuGraph?L"1":L"0", path.c_str());
+    WritePrivateProfileStringW(L"graphs", L"show_mem", g_showMemGraph?L"1":L"0", path.c_str());
+    WritePrivateProfileStringW(L"graphs", L"show_net", g_showNetGraph?L"1":L"0", path.c_str());
+}
 
 // Forward declarations
 void UpdateClickThrough();
@@ -104,13 +143,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         std::string line = BuildOverlayLine(g_lastSnap);
         SIZE sz{}; GetTextExtentPoint32A(hdc, line.c_str(), (int)line.size(), &sz);
         if (!g_frozenWidth) {
+            int activeGraphs = (g_showCpuGraph?1:0) + (g_showMemGraph?1:0) + (g_showNetGraph?1:0);
+            int graphsWidth = activeGraphs>0 ? (GRAPH_WIDTH * activeGraphs) + (GRAPH_SPACING * (activeGraphs-1)) : 0;
             g_frozenWidth = true;
-            g_frozenWindowWidth = sz.cx + PADDING_X * 2 + (GRAPH_WIDTH*3) + (GRAPH_SPACING*2) + 8;
+            g_frozenWindowWidth = sz.cx + PADDING_X * 2 + graphsWidth + (activeGraphs>0?8:0);
             RecomputeAndResize();
         }
         
         // Draw text with shadow effect for better readability
-        int textX = PADDING_X + (GRAPH_WIDTH*3) + GRAPH_SPACING*2 + 8;
+    int activeGraphs = (g_showCpuGraph?1:0) + (g_showMemGraph?1:0) + (g_showNetGraph?1:0);
+    int graphsWidth = activeGraphs>0 ? (GRAPH_WIDTH * activeGraphs) + (GRAPH_SPACING * (activeGraphs-1)) : 0;
+    int textX = PADDING_X + graphsWidth + (activeGraphs>0?8:0);
         int textY = PADDING_Y;
         
         // Draw shadow (slightly offset, dark gray)
@@ -180,9 +223,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         };
         
         if (!histories.cpu.empty()) {
-            drawGraphWithLabel(histories.cpu, PADDING_X, RGB(0, 255, 100), "CPU");        // Green for CPU
-            drawGraphWithLabel(histories.mem, PADDING_X + GRAPH_WIDTH + GRAPH_SPACING, RGB(100, 150, 255), "MEM"); // Blue for Memory  
-            drawGraphWithLabel(histories.net, PADDING_X + (GRAPH_WIDTH + GRAPH_SPACING)*2, RGB(255, 200, 0), "NET"); // Yellow for Network
+            int column = 0;
+            if (g_showCpuGraph) { drawGraphWithLabel(histories.cpu, PADDING_X + (GRAPH_WIDTH + GRAPH_SPACING)*column, RGB(0,255,100), "CPU"); column++; }
+            if (g_showMemGraph) { drawGraphWithLabel(histories.mem, PADDING_X + (GRAPH_WIDTH + GRAPH_SPACING)*column, RGB(100,150,255), "MEM"); column++; }
+            if (g_showNetGraph) { drawGraphWithLabel(histories.net, PADDING_X + (GRAPH_WIDTH + GRAPH_SPACING)*column, RGB(255,200,0), "NET"); column++; }
         }
         SelectObject(hdc, oldFont);
         EndPaint(hwnd, &ps);
@@ -260,23 +304,15 @@ void PositionNearTaskbarClock() {
 }
 
 void RecomputeAndResize() {
-    int graphsWidth = (GRAPH_WIDTH * 3) + (GRAPH_SPACING * 2);
+    int activeGraphs = (g_showCpuGraph?1:0) + (g_showMemGraph?1:0) + (g_showNetGraph?1:0);
+    int graphsWidth = activeGraphs>0 ? (GRAPH_WIDTH * activeGraphs) + (GRAPH_SPACING * (activeGraphs-1)) : 0;
     int textExtra = 300; // initial guess until frozen
-    int width = g_frozenWidth ? g_frozenWindowWidth : PADDING_X*2 + graphsWidth + 8 + textExtra;
+    int width = g_frozenWidth ? g_frozenWindowWidth : PADDING_X*2 + graphsWidth + (activeGraphs>0?8:0) + textExtra;
     int height = PADDING_Y*2 + GRAPH_HEIGHT + 14; // +14 for label text below graphs
     SetWindowPos(g_hwnd, nullptr, 0,0, width, height, SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
     PositionNearTaskbarClock();
 }
 
-static std::string FormatBytesPerSec(double v) {
-    const char* units[] = { "B/s", "KB/s", "MB/s", "GB/s", "TB/s" };
-    int idx = 0; while (v >= 1024.0 && idx < 4) { v /= 1024.0; idx++; }
-    char buf[32];
-    if (v >= 100.0) snprintf(buf, sizeof(buf), "%3.0f %s", v, units[idx]);
-    else if (v >= 10.0) snprintf(buf, sizeof(buf), "%3.1f %s", v, units[idx]);
-    else snprintf(buf, sizeof(buf), "%3.2f %s", v, units[idx]);
-    return buf;
-}
 
 void EnumerateNetworkInterfaces() {
     g_availableInterfaces.clear();
@@ -323,6 +359,13 @@ void ShowContextMenu(HWND hwnd) {
         AppendMenuW(netMenu, flags, 201 + (UINT)i, g_availableInterfaces[i].first.c_str());
     }
     
+    // Graph visibility submenu
+    HMENU graphMenu = CreatePopupMenu();
+    AppendMenuW(graphMenu, MF_STRING | (g_showCpuGraph?MF_CHECKED:0), 300, L"CPU Graph");
+    AppendMenuW(graphMenu, MF_STRING | (g_showMemGraph?MF_CHECKED:0), 301, L"Memory Graph");
+    AppendMenuW(graphMenu, MF_STRING | (g_showNetGraph?MF_CHECKED:0), 302, L"Network Graph");
+
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)graphMenu, L"Graphs");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)netMenu, L"Network Interface");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 199, L"Exit");
@@ -346,9 +389,26 @@ void ShowContextMenu(HWND hwnd) {
     } else if (cmd >= 201 && cmd < 201 + (int)g_availableInterfaces.size()) {
         g_selectedInterfaceIndex = cmd - 201;
         g_metrics.setSelectedNetworkInterface(g_availableInterfaces[g_selectedInterfaceIndex].second);
+    } else if (cmd == 300) {
+        g_showCpuGraph = !g_showCpuGraph; g_frozenWidth = false; InvalidateRect(hwnd,nullptr,FALSE); RecomputeAndResize();
+    } else if (cmd == 301) {
+        g_showMemGraph = !g_showMemGraph; g_frozenWidth = false; InvalidateRect(hwnd,nullptr,FALSE); RecomputeAndResize();
+    } else if (cmd == 302) {
+        g_showNetGraph = !g_showNetGraph; g_frozenWidth = false; InvalidateRect(hwnd,nullptr,FALSE); RecomputeAndResize();
     }
+    SaveSettings();
     
     DestroyMenu(menu);
+}
+
+static std::string FormatMB(double bytesPerSec, int decimals) {
+    double mb = bytesPerSec / (1024.0*1024.0);
+    if (mb < 0) mb = 0;
+    char fmt[16];
+    snprintf(fmt, sizeof(fmt), "%%.%df", decimals);
+    char out[32];
+    snprintf(out, sizeof(out), fmt, mb);
+    return out;
 }
 
 std::string BuildOverlayLine(const MetricsSnapshot& snap) {
@@ -356,31 +416,29 @@ std::string BuildOverlayLine(const MetricsSnapshot& snap) {
     int memPct = (int)std::round(snap.memory.usage * 100.0f);
     cpuPct = std::clamp(cpuPct, 0, 100);
     memPct = std::clamp(memPct, 0, 100);
-    double netRecv = 0, netSend = 0; int netPct = 0;
-    if (snap.net) {
-        netRecv = snap.net->bytesRecvPerSec;
-        netSend = snap.net->bytesSentPerSec;
-        if (snap.net->linkSpeedBitsPerSec > 0) {
-            double maxBytes = std::max(netRecv, netSend);
-            double cap = snap.net->linkSpeedBitsPerSec / 8.0;
-            if (cap > 0) netPct = (int)std::round(std::clamp(maxBytes / cap, 0.0, 1.0) * 100.0);
-        }
-    }
-    double diskR = 0, diskW = 0;
-    if (snap.disk) { diskR = snap.disk->readBytesPerSec; diskW = snap.disk->writeBytesPerSec; }
-    std::string netRecvStr = FormatBytesPerSec(netRecv);
-    std::string netSendStr = FormatBytesPerSec(netSend);
-    std::string diskRStr = FormatBytesPerSec(diskR);
-    std::string diskWStr = FormatBytesPerSec(diskW);
-    char buf[256];
-    snprintf(buf, sizeof(buf), "CPU %3d%%  MEM %3d%%  NET %3d%% (%s / %s)  DISK %s / %s",
-        cpuPct, memPct, netPct, netRecvStr.c_str(), netSendStr.c_str(), diskRStr.c_str(), diskWStr.c_str());
+    double netR = 0, netW = 0; // reuse R/W naming for recv/send
+    if (snap.net) { netR = snap.net->bytesRecvPerSec; netW = snap.net->bytesSentPerSec; }
+    double diskR = 0, diskW = 0; if (snap.disk) { diskR = snap.disk->readBytesPerSec; diskW = snap.disk->writeBytesPerSec; }
+
+    // Precision per spec: R: one decimal, W: two decimals (example provided)
+    std::string netRStr = FormatMB(netR, 1);
+    std::string netWStr = FormatMB(netW, 2);
+    std::string diskRStr = FormatMB(diskR, 1);
+    std::string diskWStr = FormatMB(diskW, 2);
+
+    char buf[320];
+    // Sections separated by | per request
+    // Example: CPU  34% | MEM  62% | NET R: 1.2 W: 0.34 MB/s | DSK R: 12.3 W: 0.45 MB/s
+    snprintf(buf, sizeof(buf), "CPU %3d%% | MEM %3d%% | NET R: %s W: %s MB/s | DSK R: %s W: %s MB/s",
+        cpuPct, memPct, netRStr.c_str(), netWStr.c_str(), diskRStr.c_str(), diskWStr.c_str());
     return buf;
 }
 
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     SetDpiAwareness();
     g_metrics.initialize();
+    EnumerateNetworkInterfaces();
+    LoadSettings();
     WNDCLASSW wc{}; wc.lpfnWndProc = WndProc; wc.hInstance = hInst; wc.lpszClassName = L"wtop_overlay"; wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     RegisterClassW(&wc);
     HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
